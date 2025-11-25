@@ -5,6 +5,7 @@ from google_search import search_text
 from extract_article import extract_article_text
 from search_filter import get_domain, HIGH_TRUST, MEDIUM_TRUST
 from llama import llama
+from database import res
 
 def get_trust_level(url):
     domain = get_domain(url)
@@ -50,7 +51,7 @@ def fact_check_with_consensus(claim: str, timeout_per_article=5) -> dict:
                         "title": result["title"],
                         "url": result["link"],
                         "trust": trust_level,
-                        "text": article_text[:2000]
+                        "text": article_text[:5000]
                     })
             except Exception as e:
                 print(f"    ⚠️  Could not extract {result['link']}: {str(e)[:50]}")
@@ -190,14 +191,10 @@ def display_result(result):
 
 
 if __name__ == "__main__":
-    test_claims = [
-        "The Earth revolves around the Sun once every 365.25 days",
-        "Vaccines cause autism",
-        "Climate change is caused by human activity",
-        "The Great Wall of China is visible from space",
-    ]
+    for i in res:
+        claims = i
     
-    for claim in test_claims:
+    for claim in claims:
         print(f"\n🔍 Fact-checking: '{claim}'")
         result = fact_check_with_consensus(claim)
         display_result(result)

@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 
 def extract_article_text(url: str):
     try:
-        response = requests.get(url, timeout=5)
+        response = requests.get(url, timeout=3)
         html = response.text
 
         doc = Document(html)

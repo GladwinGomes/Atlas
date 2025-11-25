@@ -4,3 +4,4 @@ beautifulsoup4
 lxml
 readability-lxml
 lxml-html-clean
+pymongo
