@@ -9,3 +9,5 @@ class Config:
 
     MONGODB_URI = os.getenv('MONGODB_URI')
     MONGODB_DB_NAME = os.getenv('MONGODB_DB_NAME')
+    
+    NODE_BACKEND_URL = os.getenv('NODE_BACKEND_URL', 'http://localhost:3000')

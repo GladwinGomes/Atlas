@@ -1,11 +1,30 @@
-import requests
 import json
-import time
 from google_search import search_text
 from extract_article import extract_article_text
 from search_filter import get_domain, HIGH_TRUST, MEDIUM_TRUST
 from llama import llama
-from database import res
+from update import mark_verified, send_verified_claim_to_backend
+from database import get_unverified_claims
+
+def clean_claim(claim: str) -> str:
+    """
+    Clean up claim text by removing YouTube metadata and excessive noise.
+    Extracts the core claim from formatted text.
+    """
+    # If claim contains YouTube metadata, try to extract the actual claim
+    if "YouTube" in claim or "youtube.com" in claim:
+        # Split on common delimiters and find the longest meaningful segment
+        segments = [s.strip() for s in claim.split('·') if s.strip() and len(s.strip()) > 20]
+        if segments:
+            # Prefer segments that don't look like timestamps or metadata
+            for seg in segments:
+                if not any(char.isdigit() for char in seg[:5]):  # Skip if starts with lots of numbers
+                    return seg
+            return segments[-1]  # Use last segment if available
+    
+    # Return first 200 chars of reasonable claims
+    return claim[:200].strip()
+
 
 def get_trust_level(url):
     domain = get_domain(url)
@@ -21,10 +40,15 @@ def fact_check_with_consensus(claim: str, timeout_per_article=5) -> dict:
     Search for claim, extract articles from trusted sources,
     and ask LLM to synthesize consensus verdict.
     """
-    print(f"  Searching for sources...")
-    results = search_text(claim)
+    # Clean up the claim if it's too long or contains junk
+    claim_cleaned = clean_claim(claim)
     
-    if not results:
+    print(f"  🔍 Searching for sources...")
+    results = search_text(claim_cleaned)
+    print(f"  Found {len(results)} results")
+    
+    if not results or len(results) == 0:
+        print("  ❌ No search results found")
         return {
             "claim": claim,
             "verdict": "INSUFFICIENT DATA",
@@ -36,14 +60,15 @@ def fact_check_with_consensus(claim: str, timeout_per_article=5) -> dict:
             "sources": []
         }
     
-    print(f"  Found {len(results)} results, extracting trusted sources...")
+    print(f"  📄 Extracting trusted sources from {len(results)} results...")
     trusted_articles = []
     
     for result in results:
-        trust_level = get_trust_level(result["link"])
-        
-        if trust_level in ["high", "medium"]:
-            try:
+        try:
+            trust_level = get_trust_level(result["link"])
+            
+            if trust_level in ["high", "medium"]:
+                print(f"    ✅ Extracting {result['title'][:50]}... ({trust_level} trust)")
                 article_text = extract_article_text(result["link"])
                 
                 if article_text and len(article_text) > 100:
@@ -53,11 +78,15 @@ def fact_check_with_consensus(claim: str, timeout_per_article=5) -> dict:
                         "trust": trust_level,
                         "text": article_text[:5000]
                     })
-            except Exception as e:
-                print(f"    ⚠️  Could not extract {result['link']}: {str(e)[:50]}")
-                continue
+                    print(f"      ↳ Successfully extracted ({len(article_text)} chars)")
+                else:
+                    print(f"      ↳ Text too short or empty")
+        except Exception as e:
+            print(f"    ⚠️  Could not extract {result.get('link', 'unknown')}: {str(e)[:50]}")
+            continue
     
     if not trusted_articles:
+        print("  ❌ No trusted sources found")
         return {
             "claim": claim,
             "verdict": "NO TRUSTED SOURCES",
@@ -69,7 +98,7 @@ def fact_check_with_consensus(claim: str, timeout_per_article=5) -> dict:
             "sources": []
         }
     
-    print(f"  Extracted {len(trusted_articles)} trusted articles, querying LLM...")
+    print(f"  🤖 Extracted {len(trusted_articles)} trusted articles, querying LLM...")
     
     # Build context from articles
     article_context = "\n\n---SOURCE BREAK---\n\n".join([
@@ -107,7 +136,8 @@ Guidelines:
     try:
         response = llama(prompt)
         
-        if not response:
+        if not response or response.strip() == "":
+            print("  ❌ LLM did not respond")
             return {
                 "claim": claim,
                 "verdict": "ERROR",
@@ -119,10 +149,11 @@ Guidelines:
                 "sources": [{"title": a["title"], "url": a["url"], "trust": a["trust"]} for a in trusted_articles]
             }
         
-        # Parse JSON response
+        print("  ✅ LLM responded, parsing JSON...")
         result = parse_json_response(response)
         
     except Exception as e:
+        print(f"  ❌ LLM error: {str(e)}")
         result = {
             "verdict": "ERROR",
             "confidence": 0,
@@ -147,7 +178,8 @@ def parse_json_response(response: str) -> dict:
     try:
         # Try direct parsing first
         return json.loads(response)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(f"    Direct JSON parse failed: {str(e)[:50]}")
         pass
     
     try:
@@ -157,11 +189,14 @@ def parse_json_response(response: str) -> dict:
         
         if start != -1 and end > start:
             json_str = response[start:end]
+            print(f"    Extracted JSON substring, trying to parse...")
             return json.loads(json_str)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(f"    Extracted JSON parse failed: {str(e)[:50]}")
         pass
     
     # Fallback response
+    print(f"    ❌ Could not parse any JSON")
     return {
         "verdict": "PARSE ERROR",
         "confidence": 0,
@@ -191,10 +226,35 @@ def display_result(result):
 
 
 if __name__ == "__main__":
-    for i in res:
-        claims = i
-    
-    for claim in claims:
-        print(f"\n🔍 Fact-checking: '{claim}'")
-        result = fact_check_with_consensus(claim)
+    claims = get_unverified_claims()
+
+    print(f"\n🔎 Found {len(claims)} unverified claims.\n")
+
+    for doc in claims:
+        claim_id = doc["_id"]
+        claim_text = doc["resolvedClaim"]
+
+        print(f"\n📌 Fact-checking: '{claim_text}'")
+
+        # Run fact checker
+        result = fact_check_with_consensus(claim_text)
         display_result(result)
+
+        # Mark as verified in MongoDB
+        mark_verified(claim_id)
+        print(f"✅ Marked claim {claim_id} as verified in DB")
+
+        # Send result to Node backend
+        try:
+            send_verified_claim_to_backend(
+                claim=claim_text,
+                verdict=result["verdict"],
+                score=int(result["confidence"] * 100),
+                explanation_snippet=result.get("summary", ""),
+                urls=[s["url"] for s in result.get("sources", [])],
+                explanation=result.get("reasoning", ""),
+                sources=result.get("sources", [])
+            )
+            print("✅ Sent verified claim to Node backend\n")
+        except Exception as e:
+            print(f"⚠️  Failed to send to backend: {str(e)}\n")

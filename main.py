@@ -1,8 +1,8 @@
 from description import fact_check_with_consensus, display_result
-from database import res
+from database import get_unverified_claims
 
-for i in res:
-        claims = i
+res = get_unverified_claims()
+claims = [item['resolvedClaim'] for item in res]
 
 def main():  
     for claim in claims: 

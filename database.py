@@ -5,8 +5,9 @@ client = pymongo.MongoClient(Config.MONGODB_URI)
 db = client[Config.MONGODB_DB_NAME]                
 collection = db['claims']                         
 
-data = collection.find()
+def get_unverified_claims():
 
-res = []
-for document in data:
-    res.append(document.get('resolvedClaim'))
+    return list(collection.find(
+        {"verified": False},
+        {"resolvedClaim": 1, "_id": 1}
+    ))
