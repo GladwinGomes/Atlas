@@ -11,14 +11,12 @@ def search_text(query: str):
     }
 
     try:
-        response = requests.get(url, params=params, timeout=10)
-        
+        response = requests.get(url, params=params, timeout=10)       
         if response.status_code != 200:
             print(f"Google Search API error: {response.status_code}")
             return []
         
-        data = response.json()
-        
+        data = response.json()       
         if data is None or "items" not in data:
             return []
         

@@ -35,7 +35,57 @@ def get_trust_level(url):
         return "medium"
     return "low"
 
-def fact_check_with_consensus(claim: str, timeout_per_article=5) -> dict:
+
+def verdict_map(v):
+    """Map LLM verdicts to standard format."""
+    mapping = {
+        "TRUE": "Likely True",
+        "FALSE": "Likely False",
+        "MIXED": "Uncertain",
+        "UNVERIFIABLE": "Unverified",
+        "NO TRUSTED SOURCES": "Unverified",
+        "INSUFFICIENT DATA": "Unverified",
+        "ERROR": "Unverified",
+        "PARSE ERROR": "Unverified",
+    }
+    return mapping.get(v, "Unverified")
+
+
+def parse_json_response(response: str) -> dict:
+    """
+    Safely parse JSON from LLM response.
+    Handles cases where LLM returns JSON with extra text.
+    """
+    try:
+        # Try direct parsing first
+        return json.loads(response)
+    except json.JSONDecodeError as e:
+        print(f"    Direct JSON parse failed: {str(e)[:50]}")
+    
+    try:
+        # Try extracting JSON from response
+        start = response.find("{")
+        end = response.rfind("}") + 1
+        
+        if start != -1 and end > start:
+            json_str = response[start:end]
+            print(f"    Extracted JSON substring, trying to parse...")
+            return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        print(f"    Extracted JSON parse failed: {str(e)[:50]}")
+    
+    # Fallback response
+    print(f"    ❌ Could not parse any JSON")
+    return {
+        "verdict": "PARSE ERROR",
+        "confidence": 0,
+        "summary": "Could not parse LLM response",
+        "reasoning": f"Raw response: {response[:150]}",
+        "key_quotes": ""
+    }
+
+
+def fact_check_with_consensus(claim: str) -> dict:
     """
     Search for claim, extract articles from trusted sources,
     and ask LLM to synthesize consensus verdict.
@@ -51,16 +101,15 @@ def fact_check_with_consensus(claim: str, timeout_per_article=5) -> dict:
         print("  ❌ No search results found")
         return {
             "claim": claim,
-            "verdict": "INSUFFICIENT DATA",
-            "confidence": 0.2,
-            "summary": "No search results found",
-            "reasoning": "No search results found",
-            "key_quotes": "",
-            "sources_used": 0,
+            "verdict": "Unverified",
+            "score": 20,
+            "explanation_snippet": "No search results found",
+            "urls": [],
+            "explanation": "No search results found",
             "sources": []
         }
     
-    print(f"  📄 Extracting trusted sources from {len(results)} results...")
+    print(f"  📰 Extracting trusted sources from {len(results)} results...")
     trusted_articles = []
     
     for result in results:
@@ -89,12 +138,11 @@ def fact_check_with_consensus(claim: str, timeout_per_article=5) -> dict:
         print("  ❌ No trusted sources found")
         return {
             "claim": claim,
-            "verdict": "NO TRUSTED SOURCES",
-            "confidence": 0.3,
-            "summary": "Search results only from low-trust domains",
-            "reasoning": "Search results only from low-trust domains",
-            "key_quotes": "",
-            "sources_used": 0,
+            "verdict": "Unverified",
+            "score": 30,
+            "explanation_snippet": "Search results only from low-trust domains",
+            "urls": [],
+            "explanation": "Search results only from low-trust domains",
             "sources": []
         }
     
@@ -140,13 +188,19 @@ Guidelines:
             print("  ❌ LLM did not respond")
             return {
                 "claim": claim,
-                "verdict": "ERROR",
-                "confidence": 0,
-                "summary": "LLM did not respond",
-                "reasoning": "Local LLM server returned empty response",
-                "key_quotes": "",
-                "sources_used": len(trusted_articles),
-                "sources": [{"title": a["title"], "url": a["url"], "trust": a["trust"]} for a in trusted_articles]
+                "verdict": "Unverified",
+                "score": 0,
+                "explanation_snippet": "LLM did not respond",
+                "urls": [a["url"] for a in trusted_articles],
+                "explanation": "Local LLM server returned empty response",
+                "sources": [
+                    {
+                        "title": a["title"],
+                        "link": a["url"],
+                        "snippet": a["text"][:150] if a["text"] else ""
+                    }
+                    for a in trusted_articles
+                ]
             }
         
         print("  ✅ LLM responded, parsing JSON...")
@@ -162,48 +216,28 @@ Guidelines:
             "key_quotes": ""
         }
     
-    # Add metadata
-    result["claim"] = claim
-    result["sources_used"] = len(trusted_articles)
-    result["sources"] = [{"title": a["title"], "url": a["url"], "trust": a["trust"]} for a in trusted_articles]
+    # Map verdict and build final response
+    mapped_verdict = verdict_map(result.get("verdict", "UNVERIFIABLE"))
+    confidence = result.get("confidence", 0)
     
-    return result
-
-
-def parse_json_response(response: str) -> dict:
-    """
-    Safely parse JSON from LLM response.
-    Handles cases where LLM returns JSON with extra text.
-    """
-    try:
-        # Try direct parsing first
-        return json.loads(response)
-    except json.JSONDecodeError as e:
-        print(f"    Direct JSON parse failed: {str(e)[:50]}")
-        pass
-    
-    try:
-        # Try extracting JSON from response
-        start = response.find("{")
-        end = response.rfind("}") + 1
-        
-        if start != -1 and end > start:
-            json_str = response[start:end]
-            print(f"    Extracted JSON substring, trying to parse...")
-            return json.loads(json_str)
-    except json.JSONDecodeError as e:
-        print(f"    Extracted JSON parse failed: {str(e)[:50]}")
-        pass
-    
-    # Fallback response
-    print(f"    ❌ Could not parse any JSON")
-    return {
-        "verdict": "PARSE ERROR",
-        "confidence": 0,
-        "summary": "Could not parse LLM response",
-        "reasoning": f"Raw response: {response[:150]}",
-        "key_quotes": ""
+    final_result = {
+        "claim": claim,
+        "verdict": mapped_verdict,
+        "score": int(confidence * 100),
+        "explanation_snippet": result.get("summary", "No summary available"),
+        "urls": [a["url"] for a in trusted_articles],
+        "explanation": result.get("reasoning", "No reasoning available"),
+        "sources": [
+            {
+                "title": a["title"],
+                "link": a["url"],
+                "snippet": a["text"][:150] if a["text"] else ""
+            }
+            for a in trusted_articles
+        ]
     }
+    
+    return final_result
 
 
 def display_result(result):
@@ -211,30 +245,30 @@ def display_result(result):
     print(f"\n{'='*70}")
     print(f"CLAIM: {result['claim']}")
     print(f"{'='*70}")
-    print(f"VERDICT: {result['verdict']} (Confidence: {result['confidence']:.0%})")
-    print(f"\nSUMMARY: {result.get('summary', 'N/A')}")
-    print(f"\nREASONING:\n{result.get('reasoning', 'N/A')}")
+    print(f"VERDICT: {result['verdict']}")
+    print(f"CONFIDENCE SCORE: {result.get('score', 'N/A')}%")
+    print(f"\nSUMMARY: {result.get('explanation_snippet', 'N/A')}")
+    print(f"\nREASONING:\n{result.get('explanation', 'N/A')}")
     
-    if result.get('key_quotes'):
-        print(f"\nKEY EVIDENCE:\n{result['key_quotes']}")
-    
-    print(f"\nSOURCES USED: {result['sources_used']}")
+    print(f"\nSOURCES USED: {len(result.get('sources', []))}")
     for i, source in enumerate(result.get('sources', []), 1):
-        print(f"  {i}. [{source['trust'].upper()}] {source['title']}")
-        print(f"     {source['url']}")
+        print(f"  {i}. {source['title']}")
+        print(f"     {source['link']}")
+        if source.get('snippet'):
+            print(f"     Snippet: {source['snippet'][:100]}...")
     print(f"{'='*70}\n")
 
 
 if __name__ == "__main__":
     claims = get_unverified_claims()
 
-    print(f"\n🔎 Found {len(claims)} unverified claims.\n")
+    print(f"\n📋 Found {len(claims)} unverified claims.\n")
 
     for doc in claims:
         claim_id = doc["_id"]
         claim_text = doc["resolvedClaim"]
 
-        print(f"\n📌 Fact-checking: '{claim_text}'")
+        print(f"\n📝 Fact-checking: '{claim_text}'")
 
         # Run fact checker
         result = fact_check_with_consensus(claim_text)
@@ -244,16 +278,15 @@ if __name__ == "__main__":
         mark_verified(claim_id)
         print(f"✅ Marked claim {claim_id} as verified in DB")
 
-        # Send result to Node backend
         try:
             send_verified_claim_to_backend(
-                claim=claim_text,
+                claim=result["claim"],
                 verdict=result["verdict"],
-                score=int(result["confidence"] * 100),
-                explanation_snippet=result.get("summary", ""),
-                urls=[s["url"] for s in result.get("sources", [])],
-                explanation=result.get("reasoning", ""),
-                sources=result.get("sources", [])
+                score=result["score"],
+                explanation_snippet=result["explanation_snippet"],
+                urls=result["urls"],
+                explanation=result["explanation"],
+                sources=result["sources"],
             )
             print("✅ Sent verified claim to Node backend\n")
         except Exception as e:

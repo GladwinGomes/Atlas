@@ -1,5 +1,8 @@
 from urllib.parse import urlparse
 
+def get_domain(url):
+    return urlparse(url).netloc.lower()
+
 HIGH_TRUST = [
     # Government & International Agencies
     ".gov", "nih.gov", "cdc.gov", "noaa.gov", "usgs.gov", "fda.gov",
@@ -28,40 +31,3 @@ MEDIUM_TRUST = [
     # Educational platforms
     "khanacademy.org", "britannica.com", "howstuffworks.com", "smithsonianmag.com",
 ]
-
-LOW_TRUST = [
-    "blogspot", "wordpress", "substack", "medium.com",
-    "quora.com", "reddit.com", "answers.com", "ask.com",
-    "facebook.com", "instagram.com", "tiktok.com", "x.com",
-    "naturalnews", "mercola", "activistpost", "beforeitsnews"
-]
-
-MISINFO_KEYWORDS = [
-    "miracle cure", "secret remedy", "hidden cure", "flat earth",
-    "detox cleanse", "no side effects", "ancient secret", "cancer cure",
-    "suppressed cure", "government hiding", "earth is flat", "miracle solution",
-]
-
-FACT_CHECK_KEYWORDS = [
-    "evidence", "study", "research", "data shows", "verified",
-    "peer-reviewed", "clinical trial", "scientific consensus",
-    "fact check", "meta-analysis",
-]
-
-
-
-def get_domain(url):
-    return urlparse(url).netloc.lower()
-
-def domain_trust(url):
-    domain = get_domain(url)
-    score = 0.5
-
-    if any(k in domain for k in HIGH_TRUST):
-        score += 0.6
-    elif any(k in domain for k in MEDIUM_TRUST):
-        score += 0.3
-    elif any(k in domain for k in LOW_TRUST):
-        score -= 0.3
-
-    return max(0, min(1, score))
