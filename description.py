@@ -1,34 +1,27 @@
 import json
+import asyncio
 from google_search import search_text
 from extract_article import extract_article_text
 from search_filter import get_domain, HIGH_TRUST, MEDIUM_TRUST
-from llama import llama
+from llama import llama  # Now async from previous conversion
 from update import mark_verified, send_verified_claim_to_backend
 from database import get_unverified_claims
 
+
 def clean_claim(claim: str) -> str:
-    """
-    Clean up claim text by removing YouTube metadata and excessive noise.
-    Extracts the core claim from formatted text.
-    """
-    # If claim contains YouTube metadata, try to extract the actual claim
+    """Clean up claim text by removing YouTube metadata and excessive noise."""
     if "YouTube" in claim or "youtube.com" in claim:
-        # Split on common delimiters and find the longest meaningful segment
         segments = [s.strip() for s in claim.split('·') if s.strip() and len(s.strip()) > 20]
         if segments:
-            # Prefer segments that don't look like timestamps or metadata
             for seg in segments:
-                if not any(char.isdigit() for char in seg[:5]):  # Skip if starts with lots of numbers
+                if not any(char.isdigit() for char in seg[:5]):
                     return seg
-            return segments[-1]  # Use last segment if available
-    
-    # Return first 200 chars of reasonable claims
+            return segments[-1]
     return claim[:200].strip()
 
 
 def get_trust_level(url):
     domain = get_domain(url)
-    
     if any(k in domain for k in HIGH_TRUST):
         return "high"
     elif any(k in domain for k in MEDIUM_TRUST):
@@ -52,18 +45,13 @@ def verdict_map(v):
 
 
 def parse_json_response(response: str) -> dict:
-    """
-    Safely parse JSON from LLM response.
-    Handles cases where LLM returns JSON with extra text.
-    """
+    """Safely parse JSON from LLM response."""
     try:
-        # Try direct parsing first
         return json.loads(response)
     except json.JSONDecodeError as e:
         print(f"    Direct JSON parse failed: {str(e)[:50]}")
     
     try:
-        # Try extracting JSON from response
         start = response.find("{")
         end = response.rfind("}") + 1
         
@@ -74,7 +62,6 @@ def parse_json_response(response: str) -> dict:
     except json.JSONDecodeError as e:
         print(f"    Extracted JSON parse failed: {str(e)[:50]}")
     
-    # Fallback response
     print(f"    ❌ Could not parse any JSON")
     return {
         "verdict": "PARSE ERROR",
@@ -85,12 +72,11 @@ def parse_json_response(response: str) -> dict:
     }
 
 
-def fact_check_with_consensus(claim: str) -> dict:
+async def fact_check_with_consensus(claim: str) -> dict:
     """
     Search for claim, extract articles from trusted sources,
     and ask LLM to synthesize consensus verdict.
     """
-    # Clean up the claim if it's too long or contains junk
     claim_cleaned = clean_claim(claim)
     
     print(f"  🔍 Searching for sources...")
@@ -148,13 +134,11 @@ def fact_check_with_consensus(claim: str) -> dict:
     
     print(f"  🤖 Extracted {len(trusted_articles)} trusted articles, querying LLM...")
     
-    # Build context from articles
     article_context = "\n\n---SOURCE BREAK---\n\n".join([
         f"[{article['trust'].upper()} TRUST] {article['title']}\nURL: {article['url']}\n\n{article['text']}"
         for article in trusted_articles
     ])
     
-    # Ask LLM to synthesize verdict
     prompt = f"""You are a fact-checker. Analyze these articles from trusted sources and determine if the claim is accurate.
 
 CLAIM TO VERIFY: "{claim}"
@@ -182,7 +166,7 @@ Guidelines:
 - Return ONLY the JSON object, nothing else"""
 
     try:
-        response = llama(prompt)
+        response = await llama(prompt)  # Now properly awaited
         
         if not response or response.strip() == "":
             print("  ❌ LLM did not respond")
@@ -216,7 +200,6 @@ Guidelines:
             "key_quotes": ""
         }
     
-    # Map verdict and build final response
     mapped_verdict = verdict_map(result.get("verdict", "UNVERIFIABLE"))
     confidence = result.get("confidence", 0)
     
@@ -259,9 +242,9 @@ def display_result(result):
     print(f"{'='*70}\n")
 
 
-if __name__ == "__main__":
+async def main():
+    """Main async entry point."""
     claims = get_unverified_claims()
-
     print(f"\n📋 Found {len(claims)} unverified claims.\n")
 
     for doc in claims:
@@ -271,7 +254,7 @@ if __name__ == "__main__":
         print(f"\n📝 Fact-checking: '{claim_text}'")
 
         # Run fact checker
-        result = fact_check_with_consensus(claim_text)
+        result = await fact_check_with_consensus(claim_text)
         display_result(result)
 
         # Mark as verified in MongoDB
@@ -291,3 +274,7 @@ if __name__ == "__main__":
             print("✅ Sent verified claim to Node backend\n")
         except Exception as e:
             print(f"⚠️  Failed to send to backend: {str(e)}\n")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
