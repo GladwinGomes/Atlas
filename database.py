@@ -11,3 +11,10 @@ def get_unverified_claims():
         {"verified": False},
         {"resolvedClaim": 1, "_id": 1}
     ))
+
+def mark_verified(claim_id):
+    # Update MongoDB to set verified: true
+    collection.update_one(
+        {"_id": claim_id},
+        {"$set": {"verified": True}}
+    )

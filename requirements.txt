@@ -7,3 +7,4 @@ lxml-html-clean
 pymongo
 motor
 aiohttp
+fastapi uvicorn
